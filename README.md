@@ -72,6 +72,7 @@ Example workflow orchestrator implementation based on the
     - [Local table](#local-table)
     - [Remote](#remote)
   - [Configuration](#configuration)
+    - [Service bind addresses](#service-bind-addresses)
   - [Docker runtimes](#docker-runtimes)
     - [Apple Silicon (colima + virtiofs)](#apple-silicon-colima--virtiofs)
     - [Fedora / RHEL with Podman](#fedora--rhel-with-podman)
@@ -99,14 +100,6 @@ docker compose up
 
 This will start the `orchestrator`, `orchestrator-ui`, `netbox`, `federation`, `postgres` and `redis`.
 
-To include LSO, run the following command instead:
-
-```
-COMPOSE_PROFILES=lso LSO_ENABLED=True docker compose up
-```
-
-This will build the Docker image for LSO locally, and make the orchestrator use the included Ansible playbooks.
-
 To access the new v2 `orchestrator-ui`, point your browser to:
 
 ```
@@ -124,6 +117,28 @@ To access `federation`, point your browser to:
 ```
 http://localhost:4000
 ```
+
+> [!WARNING]
+> This setup is not meant to be used in production!
+> All services bind to `127.0.0.1`, so they are only reachable from the machine
+> running them. This is on purpose: several of them use well-known credentials
+> or no authentication at all. If you run the stack on a remote machine and
+> browse to it from another one, bind the services you need to `0.0.0.0`, for
+> example `BIND_ADDRESS_ORCHESTRATOR_UI=0.0.0.0 docker compose up`. See
+> [Service bind addresses](#service-bind-addresses) for the full list and for
+> the extra steps the UI needs.
+
+#### Profiles
+
+To include the Lightweight Service Orchestrator (LSO), run the following command instead:
+
+```
+COMPOSE_PROFILES=lso LSO_ENABLED=True docker compose up
+```
+
+This will build the Docker image for LSO locally, and make the orchestrator use the included Ansible playbooks.
+
+To also start a chat frontend with an AI agent that can search the orchestrator, see [AI agents](#ai-agents).
 
 ### Using the example orchestrator
 
@@ -1687,9 +1702,170 @@ For production environments with an existing customer administration system (suc
 
 This approach keeps the orchestrator's customer data in sync with the authoritative source while still allowing the UI to use the standard customer dropdown.
 
+## AI agents
+
+The repository includes an optional set of AI agent services that mirror the
+agent architecture SURF runs in production on Kubernetes with
+[kagent](https://kagent.dev): a chat frontend talks to per-domain agents,
+agents speak the A2A protocol, and every agent gets its domain tools from an
+MCP server owned by the service it works against. This example is meant for
+orchestrator users who do not run Kubernetes, so docker compose +
+[docker-agent (cagent)](https://docs.docker.com/ai/cagent/) take kagent's
+place: the agents are declarative cagent manifests served over A2A, plus one
+BYO agent image, the same split kagent deployments use (declarative `Agent`
+resources alongside bring-your-own containers), with each compose service
+mapping 1:1 onto a kagent resource should you move to Kubernetes later.
+
+```
+LibreChat ──OpenAI /v1──► a2a-proxy ──A2A──► planner-agent (:8084)
+ (:3080)                   (:8090)             │ A2A
+                                               ├──► wfo-agent (:8082) ────────MCP──► orchestrator /mcp (:8080)
+                                               └──► inventory-agent (:8083) ──MCP──► netbox-mcp (:8092) ──► netbox
+```
+
+The agent services are defined in [`docker-compose.agents.yml`](docker-compose.agents.yml),
+pulled into the stack by the `include:` at the top of `docker-compose.yml`, and
+gated behind the `agents` profile, so the base orchestrator stack stays
+self-contained and unchanged when the agents are not started.
+
+Three agents: a **planner** that decomposes questions and delegates over A2A,
+and two domain agents: **wfo-search** for orchestration data and
+**inventory** for the NetBox network inventory. Each domain agent owns
+exactly one MCP toolset, served by the system it works against.
+
+| Service           | Image                                             | Purpose                                                                         |
+| ----------------- | ------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `librechat`       | `ghcr.io/danny-avila/librechat-dev`               | [LibreChat](https://www.librechat.ai/) chat UI on :3080                         |
+| `mongodb`         | `mongo:8`                                         | LibreChat conversation/auth store                                               |
+| `a2a-proxy`       | `ghcr.io/nren-agents/kagent-a2a-proxy`            | Exposes A2A agents as OpenAI-compatible models (LibreChat has no A2A client)    |
+| `planner-agent`   | [docker-agent](https://docs.docker.com/ai/cagent/) runtime | Declarative cagent agent; delegates to the domain agents over A2A      |
+| `wfo-agent`       | `ghcr.io/workfloworchestrator/orchestrator-agent` | WFO search agent (pydantic-ai); all tools come from the orchestrator MCP server |
+| `inventory-agent` | [docker-agent](https://docs.docker.com/ai/cagent/) runtime | Declarative cagent agent; read-only NetBox inventory tools via MCP     |
+| `netbox-mcp`      | `netboxlabs/netbox-mcp-server`                    | Read-only MCP server in front of the compose NetBox                             |
+
+`planner-agent` and `inventory-agent` are declarative
+[docker-agent (cagent)](https://docs.docker.com/ai/cagent/) agents, each
+served over A2A by the official `docker/docker-agent` image. Everything
+that makes an agent *that* agent lives in `docker/<name>-agent/`: an
+`agent.yaml` declaring model, toolsets and peers
+([planner](./docker/planner-agent/agent.yaml),
+[inventory](./docker/inventory-agent/agent.yaml)) with the system prompt in
+an `instructions.md` next to it (`instruction_file`). The
+planner's A2A toolsets fetch each peer's agent card (name, description,
+skills) at startup, so its knowledge of what it can delegate to is whatever
+the agents themselves advertise: adding an agent means adding a toolset
+entry with a URL, never editing the planner's prompt.
+
+The orchestrator itself needs no extra service: orchestrator-core ships a
+built-in MCP server, enabled with `MCP_ENABLED=True` in
+`docker/orchestrator/orchestrator.env` and mounted at
+`http://localhost:8080/mcp` (streamable HTTP).
+
+### Start the agents
+
+The only credential the agent stack needs is an LLM API key for the search
+agent. Put it in a `.env` file next to `docker-compose.yml` (gitignored):
+
+```
+AGENT_MODEL=openai:gpt-5-mini
+AGENT_API_KEY=sk-...
+```
+
+`AGENT_MODEL` is a [pydantic-ai model string](https://ai.pydantic.dev/models/)
+(`provider:model`) used by the wfo-agent; for providers that need a custom
+endpoint (Azure, Ollama, LiteLLM) additionally set `AGENT_API_BASE` in
+`docker/overrides/wfo-agent/wfo-agent.env`. The two cagent agents declare
+their model in their own `agent.yaml` (default `openai/gpt-4o`) and read the
+same `AGENT_API_KEY` from the root `.env`.
+
+Non-agent services keep their configuration in
+`docker/<service>/<service>.env` with `docker/overrides/<service>/` hooks,
+see [docker/overrides/configuration.md](./docker/overrides/configuration.md);
+the cagent agents are configured entirely through their mounted
+`agent.yaml` + `instructions.md`.
+
+> [!NOTE]
+> A cagent agent's A2A card captures its container address at startup. If you
+> restart `inventory-agent` on its own, restart `planner-agent` afterwards so
+> it re-resolves its peers.
+
+Then start the stack with the `agents` profile:
+
+```
+# Set the profile in this env-var. When using multiple profiles, separate them by a comma
+export COMPOSE_PROFILES=agents
+
+docker compose up -d
+```
+
+Open http://localhost:3080, register a local account (stored in your own
+mongodb container), and pick a model under **WFO Agents**:
+
+- **planner** (default): cross-domain questions, e.g. *"Which sites exist in
+  NetBox, and how many products does the orchestrator have?"*; it delegates
+  to both domain agents and combines the answers.
+- **wfo-search** / **inventory**: talk to a domain agent directly to see
+  what each one contributes.
+
+The inventory answers get interesting after you run the `NetBox Bootstrap`
+task and some node/port workflows (see [Quickstart](#quickstart)) so NetBox
+actually contains devices.
+
 ## Configuration
 
 Environment variables and orchestrator-core can be overridden for development purposes. Please refer to [this documentation](./docker/overrides/configuration.md) for more details.
+
+### Service bind addresses
+
+Every published port binds to `127.0.0.1` by default, so the services are only
+reachable from the machine running them. This is deliberate as several services either
+use static credentials or no authentication at all, and some services expose a debugger. 
+In short, none of them services should be accessible on a shared network by accident,
+which is what the default configuration ensures.
+
+Each service has its own variable, named `BIND_ADDRESS_<SERVICE>`, that can be
+used for granular overrides of the bind address.
+
+| Variable | Service | Host port(s) |
+| --- | --- | --- |
+| `BIND_ADDRESS_ORCHESTRATOR_UI` | `orchestrator-ui` | 3000 |
+| `BIND_ADDRESS_ORCHESTRATOR` | `orchestrator` | 8080 |
+| `BIND_ADDRESS_ORCHESTRATOR_DEBUGPY` | `orchestrator` | 5678 (debugger) |
+| `BIND_ADDRESS_NETBOX` | `netbox` | 8000 |
+| `BIND_ADDRESS_FEDERATION` | `federation` | 4000 |
+| `BIND_ADDRESS_POSTGRES` | `postgres` | 5432 |
+| `BIND_ADDRESS_LSO` | `lso` | 8001 |
+| `BIND_ADDRESS_EMBEDDINGS` | `embeddings` | 8081 |
+
+To make a service reachable from other machines, bind it to `0.0.0.0` or to one specific host address:
+
+```bash
+BIND_ADDRESS_ORCHESTRATOR_UI=0.0.0.0 docker compose up
+```
+
+This can be made semi-persistent by adding it to the `.env` file.
+
+> [!WARNING]
+> Do not use this for permanent deployments in shared networks. If you do, consult the
+> documentation for each individual component on how to setup authentication.
+
+
+> [!NOTE]
+> The `orchestrator-ui` calls the orchestrator from the *browser*, so exposing
+> the UI on its own is not enough to use it from another machine. Also set
+> `BIND_ADDRESS_ORCHESTRATOR=0.0.0.0` and point the UI at an address the
+> browser can resolve, by overriding `ORCHESTRATOR_API_HOST`,
+> `ORCHESTRATOR_GRAPHQL_HOST` and `ORCHESTRATOR_WEBSOCKET_URL` in
+> `docker/overrides/orchestrator-ui/orchestrator-ui.env`.
+>
+> Similarly, `netbox` rejects form submissions from origins it does not know.
+> When reaching it by hostname or IP instead of `localhost`, add that origin to
+> `CSRF_TRUSTED_ORIGINS` in `docker/overrides/netbox/netbox.env`.
+
+> [!WARNING]
+> `BIND_ADDRESS_ORCHESTRATOR_DEBUGPY` exposes the Python debugger, which has no
+> authentication and allows arbitrary code execution. Only widen it on a network
+> you trust.
 
 ## Docker runtimes
 
