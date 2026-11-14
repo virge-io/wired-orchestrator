@@ -23,5 +23,18 @@ class Settings(BaseSettings):
     IPv4_CORE_LINK_PREFIX: str = "10.0.10.0/24"
     IPv6_CORE_LINK_PREFIX: str = "fc00:0:0:10::/64"
 
+    # Campus / CNaaS-NMS integration
+    CNAAS_ENABLED: bool = False  # False = mock mode: no calls to CNaaS, workflows still run end-to-end
+    CNAAS_API_URL: str = "https://cnaas_api:1443/api/v1.0"
+    CNAAS_TOKEN: str = ""
+    CNAAS_TOKEN_FILE: str = "/opt/cnaas/jwt/token"  # written by the cnaas-jwt init container
+    CNAAS_VERIFY_TLS: bool = False
+    CNAAS_JOB_TIMEOUT: int = 900
+    CNAAS_SETTINGS_REPO: str = "/opt/cnaas/git/settings.git"  # bare repo served by cnaas-git
+    CAMPUS_SITE_SLUG: str = "campus"
+    CAMPUS_MGMT_PREFIX: str = "10.100.0.0/24"
+    CAMPUS_MGMT_VLAN: int = 10
+    CAMPUS_LOOPBACK_PREFIX: str = "10.100.255.0/24"
+
 
 settings = Settings()

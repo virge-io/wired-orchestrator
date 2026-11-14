@@ -15,11 +15,13 @@
 from orchestrator.core.domain import SUBSCRIPTION_MODEL_REGISTRY
 
 from products.product_types.core_link import CoreLink
+from products.product_types.corelink import Corelink
 from products.product_types.l2vpn import L2vpn
 from products.product_types.node import Node
 from products.product_types.nsip2p import Nsip2p
 from products.product_types.nsistp import Nsistp
 from products.product_types.port import Port
+from products.product_types.switch import Switch
 
 SUBSCRIPTION_MODEL_REGISTRY.update(
     {
@@ -34,5 +36,7 @@ SUBSCRIPTION_MODEL_REGISTRY.update(
         "l2vpn": L2vpn,
         "nsistp": Nsistp,
         "nsip2p": Nsip2p,
+        "switch Juniper": Switch,
+        "corelink": Corelink,
     }
 )

@@ -1,0 +1,70 @@
+{#- Core switch (CNaaS DIST). Hosts the campus management VLAN gateway; corelinks are L2 LACP trunks
+    rendered from settings devices/<hostname>/interfaces.yml (ifclass downlink + aggregate_id). -#}
+{% include 'base.j2' %}
+{% set aggs = {} %}
+{% for intf in interfaces | default([]) %}
+{%   if intf.aggregate_id is defined and intf.aggregate_id is not none %}
+{%     set _ = aggs.update({intf.aggregate_id: True}) %}
+{%   endif %}
+{% endfor %}
+chassis {
+    aggregated-devices {
+        ethernet {
+            device-count 32;
+        }
+    }
+}
+interfaces {
+{% for intf in interfaces | default([]) %}
+    {{ intf.name }} {
+{%   if intf.enabled is defined and not intf.enabled %}
+        disable;
+{%   endif %}
+{%   if intf.aggregate_id is defined and intf.aggregate_id is not none %}
+        ether-options {
+            802.3ad ae{{ intf.aggregate_id }};
+        }
+{%   elif intf.ifclass == 'custom' and intf.config is defined %}
+        {{ intf.config }}
+{%   endif %}
+    }
+{% endfor %}
+{% for agg_id in aggs %}
+    ae{{ agg_id }} {
+        description "corelink";
+        aggregated-ether-options {
+            lacp {
+                active;
+            }
+        }
+        unit 0 {
+            family ethernet-switching {
+                interface-mode trunk;
+                vlan {
+                    members all;
+                }
+            }
+        }
+    }
+{% endfor %}
+    irb {
+        unit {{ mgmt_vlan_id }} {
+            family inet {
+{% for md in mgmtdomains | default([]) %}
+                address {{ md.ipv4_gw }};
+{% endfor %}
+{% if not mgmtdomains %}
+                address {{ mgmt_ipif }};
+{% endif %}
+            }
+        }
+    }
+    lo0 {
+        unit 0 {
+            family inet {
+                address {{ mgmt_ip }}/32;
+            }
+        }
+    }
+}
+{% include 'vlans.j2' %}
