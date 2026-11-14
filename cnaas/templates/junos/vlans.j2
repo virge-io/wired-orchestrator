@@ -1,0 +1,11 @@
+vlans {
+    mgmt {
+        vlan-id {{ mgmt_vlan_id }};
+        l3-interface irb.{{ mgmt_vlan_id }};
+    }
+{% for name, vx in (vxlans | default({})).items() if vx.vlan_id != mgmt_vlan_id %}
+    {{ vx.vlan_name }} {
+        vlan-id {{ vx.vlan_id }};
+    }
+{% endfor %}
+}

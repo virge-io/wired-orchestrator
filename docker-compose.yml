@@ -3,6 +3,7 @@
 include:
   - path: docker-compose.agents.yml
   - path: demo/docker-compose.demo.yml
+  - path: docker-compose.campus.yml
 
 x-netbox: &netbox
   build:
@@ -195,6 +196,10 @@ services:
         required: false
     environment:
       LSO_ENABLED: ${LSO_ENABLED:-False}
+      CNAAS_ENABLED: ${CNAAS_ENABLED:-False}
+      CAMPUS_MGMT_PREFIX: ${CAMPUS_MGMT_PREFIX:-10.100.0.0/24}
+      CAMPUS_MGMT_VLAN: ${CAMPUS_MGMT_VLAN:-10}
+      CAMPUS_LOOPBACK_PREFIX: ${CAMPUS_LOOPBACK_PREFIX:-10.100.255.0/24}
     ports:
       - "${BIND_ADDRESS_ORCHESTRATOR:-127.0.0.1}:8080:8080"
       - "${BIND_ADDRESS_ORCHESTRATOR_DEBUGPY:-127.0.0.1}:5678:5678" #Enable Python debugger
@@ -219,6 +224,8 @@ services:
       - ./templates:/home/orchestrator/templates
       - ./docker/orchestrator/.bashrc:/home/orchestrator/.bashrc
       - ${CORE_DIR:-./docker/overrides/orchestrator-core}:/home/orchestrator/orchestrator-core
+      - cnaas-git:/opt/cnaas/git
+      - cnaas-jwt:/opt/cnaas/jwt:ro
     entrypoint: ["/home/orchestrator/etc/orchestrator/entrypoint.sh"]
     depends_on:
       postgres:
