@@ -2,12 +2,12 @@
 
 from typing import Annotated
 
+from orchestrator.core.domain.base import SubscriptionModel
 from orchestrator.core.forms import FormPage
 from orchestrator.core.workflow import StepList, begin, step
 from orchestrator.core.workflows.utils import terminate_workflow
 from pydantic import Field
 
-from products.product_types.switch import SwitchProvisioning
 from pydantic_forms.types import InputForm, State, UUIDstr
 from pydantic_forms.validators import DisplaySubscription
 from services import cnaas_client, netbox
@@ -25,7 +25,9 @@ def terminate_initial_input_form_generator(subscription_id: UUIDstr) -> InputFor
 
 
 @step("Remove device from CNaaS")
-def remove_from_cnaas(subscription: SwitchProvisioning, factory_default: bool) -> State:
+def remove_from_cnaas(subscription_id: UUIDstr, factory_default: bool) -> State:
+    # Load by id so both ACTIVE and PROVISIONING (never ZTP'd) switches can be terminated
+    subscription = SubscriptionModel.from_subscription(subscription_id)
     device = cnaas_client.get_device(subscription.switch.switch_name)
     if device:
         cnaas_client.wait_for_job(cnaas_client.delete_device(device["id"], factory_default=factory_default))
@@ -33,7 +35,8 @@ def remove_from_cnaas(subscription: SwitchProvisioning, factory_default: bool) -
 
 
 @step("Delete device from NetBox")
-def remove_from_netbox(subscription: SwitchProvisioning) -> State:
+def remove_from_netbox(subscription_id: UUIDstr) -> State:
+    subscription = SubscriptionModel.from_subscription(subscription_id)
     for ip_id in {subscription.switch.mgmt_ipam_id, subscription.switch.loopback_ipam_id} - {None}:
         netbox.delete_ip_address(id=ip_id)
     netbox.delete_device(id=subscription.switch.ims_id)
