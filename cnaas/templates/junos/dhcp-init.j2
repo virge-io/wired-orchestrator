@@ -1,0 +1,45 @@
+/* Generic ZTP bootstrap, served statically by cnaas_httpd via DHCP option 43 (not rendered).
+ * Gives CNaaS temporary NETCONF/SSH access as the DISCOVERED user; device_init replaces it entirely.
+ * Replace the password hash below (and USERNAME/PASSWORD_DISCOVERED in .env) before production use. */
+system {
+    host-name ztp-bootstrap;
+    root-authentication {
+        encrypted-password "$6$ztp$ChangeMeChangeMeChangeMeChangeMeChangeMeChangeMeChangeMeChangeMe0"; ## SECRET-DATA
+    }
+    login {
+        user cnaas {
+            class super-user;
+            authentication {
+                encrypted-password "$6$ztp$ChangeMeChangeMeChangeMeChangeMeChangeMeChangeMeChangeMeChangeMe0"; ## SECRET-DATA
+            }
+        }
+    }
+    services {
+        ssh {
+            root-login deny;
+        }
+        netconf {
+            ssh;
+        }
+    }
+}
+interfaces {
+    irb {
+        unit 0 {
+            family inet {
+                dhcp;
+            }
+        }
+    }
+}
+vlans {
+    ztp {
+        vlan-id 1;
+        l3-interface irb.0;
+    }
+}
+protocols {
+    lldp {
+        interface all;
+    }
+}

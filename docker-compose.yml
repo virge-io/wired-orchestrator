@@ -1,3 +1,10 @@
+# The AI agent services (--profile agents) live in docker-compose.agents.yml;
+# see the "AI agents" section in the README.
+include:
+  - path: docker-compose.agents.yml
+  - path: demo/docker-compose.demo.yml
+  - path: docker-compose.campus.yml
+
 x-netbox: &netbox
   build:
     context: docker/netbox
@@ -23,12 +30,25 @@ x-netbox: &netbox
     - netbox-media-files:/opt/netbox/netbox/media:z
     - ./docker/netbox/data.json:/etc/netbox/data.json
 
+# Published ports bind to the host loopback (127.0.0.1) by default, so the
+# services are only reachable from this machine. Several of them ship without
+# authentication or with well-known credentials, and on Linux published ports
+# bypass the host firewall, so widen these deliberately.
+#
+# Every service has its own BIND_ADDRESS_<SERVICE> variable, named after the
+# compose service in uppercase with dashes replaced by underscores; the
+# orchestrator's debugger has a separate one. To reach a service from another
+# machine, point it at another address:
+#
+#   BIND_ADDRESS_ORCHESTRATOR_UI=0.0.0.0 docker compose up
+#
+# See the "Service bind addresses" section in README.md for details.
 services:
   postgres:
     container_name: postgres
     image: "pgvector/pgvector:pg17"
     ports:
-      - "5432:5432"
+      - "${BIND_ADDRESS_POSTGRES:-127.0.0.1}:5432:5432"
     environment:
       POSTGRES_USER: nwa
       POSTGRES_PASSWORD: nwa
@@ -83,7 +103,7 @@ services:
       - path: ./docker/overrides/embeddings/embeddings.env
         required: false
     ports:
-      - "8081:80"
+      - "${BIND_ADDRESS_EMBEDDINGS:-127.0.0.1}:8081:80"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/health"]
       interval: 10s
@@ -96,6 +116,8 @@ services:
     build:
       context: docker/federation
       dockerfile: rover.Dockerfile
+      args:
+        ROVER_UID: ${ROVER_UID:-1001}
     depends_on:
       orchestrator:
         condition: service_healthy
@@ -112,7 +134,7 @@ services:
     container_name: federation
     image: ghcr.io/apollographql/router:v2.11.0
     ports:
-      - "4000:4000"
+      - "${BIND_ADDRESS_FEDERATION:-127.0.0.1}:4000:4000"
     depends_on:
       rover-compose:
         condition: service_completed_successfully
@@ -128,7 +150,7 @@ services:
     expose:
       - "8080"
     ports:
-      - "8000:8080"
+      - "${BIND_ADDRESS_NETBOX:-127.0.0.1}:8000:8080"
     entrypoint:
       ["/opt/netbox/docker-entrypoint.sh", "/etc/netbox/entrypoint.sh"]
 
@@ -156,23 +178,31 @@ services:
       - path: ./docker/overrides/orchestrator-ui/orchestrator-ui.env
         required: false
     ports:
-      - "3000:3000"
+      - "${BIND_ADDRESS_ORCHESTRATOR_UI:-127.0.0.1}:3000:3000"
     depends_on:
       orchestrator:
         condition: service_started
 
   orchestrator:
     container_name: orchestrator
-    image: ${ORCH_BACKEND_TAG:-ghcr.io/workfloworchestrator/orchestrator-core:latest}
+    # Keep this tag in sync with the orchestrator-core pin in pyproject.toml:
+    # the image ships a preinstalled venv, and running `db upgrade heads` with
+    # a newer image against a database used by the pinned version (or vice
+    # versa) leaves alembic revisions the other version cannot resolve.
+    image: ${ORCH_BACKEND_TAG:-ghcr.io/workfloworchestrator/orchestrator-core:5.1.0}
     env_file:
       - ./docker/orchestrator/orchestrator.env
       - path: ./docker/overrides/orchestrator/orchestrator.env
         required: false
     environment:
       LSO_ENABLED: ${LSO_ENABLED:-False}
+      CNAAS_ENABLED: ${CNAAS_ENABLED:-False}
+      CAMPUS_MGMT_PREFIX: ${CAMPUS_MGMT_PREFIX:-10.100.0.0/24}
+      CAMPUS_MGMT_VLAN: ${CAMPUS_MGMT_VLAN:-10}
+      CAMPUS_LOOPBACK_PREFIX: ${CAMPUS_LOOPBACK_PREFIX:-10.100.255.0/24}
     ports:
-      - "8080:8080"
-      - "5678:5678" #Enable Python debugger
+      - "${BIND_ADDRESS_ORCHESTRATOR:-127.0.0.1}:8080:8080"
+      - "${BIND_ADDRESS_ORCHESTRATOR_DEBUGPY:-127.0.0.1}:5678:5678" #Enable Python debugger
     expose:
       - 5678 #Enable Python debugger
     volumes:
@@ -188,11 +218,14 @@ services:
       - ./utils:/home/orchestrator/utils
       - ./services:/home/orchestrator/services
       - ./pyproject.toml:/home/orchestrator/pyproject.toml
+      - ./uv.lock:/home/orchestrator/uv.lock
       - ./alembic.ini:/home/orchestrator/alembic.ini
       - ./translations:/home/orchestrator/translations
       - ./templates:/home/orchestrator/templates
       - ./docker/orchestrator/.bashrc:/home/orchestrator/.bashrc
       - ${CORE_DIR:-./docker/overrides/orchestrator-core}:/home/orchestrator/orchestrator-core
+      - cnaas-git:/opt/cnaas/git
+      - cnaas-jwt:/opt/cnaas/jwt:ro
     entrypoint: ["/home/orchestrator/etc/orchestrator/entrypoint.sh"]
     depends_on:
       postgres:
@@ -221,7 +254,7 @@ services:
       - path: ./docker/overrides/lso/lso.env
         required: false
     ports:
-      - "8001:8000"
+      - "${BIND_ADDRESS_LSO:-127.0.0.1}:8001:8000"
     volumes:
       - ./ansible/plays_and_roles:/app/demo/ansible/playbooks
       - ./ansible/inventory:/opt/ansible_inventory

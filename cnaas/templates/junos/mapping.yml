@@ -1,0 +1,13 @@
+# Wired campus Junos templates for CNaaS-NMS.
+# Campus role -> CNaaS device type: core = DIST (hosts the mgmt VLAN gateway / mgmtdomain), dist + access = ACCESS.
+---
+DIST:
+    entrypoint: core.j2
+    dependencies:
+        - base.j2
+        - vlans.j2
+ACCESS:
+    entrypoint: access.j2
+    dependencies:
+        - base.j2
+        - vlans.j2

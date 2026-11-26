@@ -1,0 +1,147 @@
+# Campus stack: SUNET CNaaS-NMS (ZTP + config push to Juniper) wired to the orchestrator and NetBox.
+#   COMPOSE_PROFILES=campus docker compose up -d
+# Configure the ZTP network in .env (see .env.campus.example). Images are pinned; bump deliberately.
+# SUNET images are amd64-only: on arm64 hosts run `COMPOSE_PROFILES=campus docker compose build` once.
+x-cnaas-repos: &cnaas-repos
+  GITREPO_TEMPLATES: git://cnaas-git/templates.git
+  GITREPO_SETTINGS: git://cnaas-git/settings.git
+
+services:
+  cnaas-git:
+    container_name: cnaas-git
+    profiles: [campus]
+    image: docker.io/alpine:3.22
+    entrypoint: ["/src/init-git.sh"]
+    environment:
+      ZTP_HTTP_SERVER: ${ZTP_HTTP_SERVER:-10.100.2.2}
+      ZTP_SUBNET: ${ZTP_SUBNET:-10.100.2.0}
+      ZTP_NETMASK: ${ZTP_NETMASK:-255.255.255.0}
+      ZTP_ROUTER: ${ZTP_ROUTER:-10.100.2.1}
+      ZTP_RANGE_START: ${ZTP_RANGE_START:-10.100.2.20}
+      ZTP_RANGE_END: ${ZTP_RANGE_END:-10.100.2.200}
+    ports:
+      - "127.0.0.1:9418:9418"  # dhcpd runs on the host network and clones etc.git from here
+    volumes:
+      - ./cnaas/init-git.sh:/src/init-git.sh:ro
+      - ./cnaas/templates:/src/templates:ro
+      - ./cnaas/etc:/src/etc:ro
+      - cnaas-git:/git
+    healthcheck:
+      test: ["CMD", "test", "-f", "/git/ready"]
+      interval: 3s
+      retries: 40
+
+  cnaas-jwt:
+    container_name: cnaas-jwt
+    profiles: [campus]
+    image: ghcr.io/astral-sh/uv:0.9.7-python3.13-alpine
+    command: ["uv", "run", "--no-project", "--with", "pyjwt[crypto]==2.10.1", "/src/jwt-init.py"]
+    volumes:
+      - ./cnaas/jwt-init.py:/src/jwt-init.py:ro
+      - cnaas-jwt:/jwt
+
+  cnaas_postgres:
+    container_name: cnaas_postgres
+    profiles: [campus]
+    image: docker.io/postgres:16
+    environment:
+      POSTGRES_USER: cnaas
+      POSTGRES_PASSWORD: ${CNAAS_DB_PASSWORD:-cnaas}
+      POSTGRES_DB: cnaas
+    volumes:
+      - cnaas-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "cnaas"]
+      interval: 3s
+      retries: 20
+
+  cnaas_redis:
+    container_name: cnaas_redis
+    profiles: [campus]
+    image: docker.io/redis:7-alpine
+
+  cnaas_httpd:
+    container_name: cnaas_httpd
+    profiles: [campus]
+    image: docker.sunet.se/cnaas/httpd:v1.8.0
+    # SUNET publishes amd64 images only; on arm64 run `docker compose build cnaas_httpd` first.
+    build:
+      context: https://github.com/SUNET/cnaas-httpd.git#develop
+      dockerfile: docker/httpd/Dockerfile
+    environment:
+      GITREPO_TEMPLATES: git://cnaas-git/templates.git
+    ports:
+      # Must be reachable from the switches on the ZTP VLAN (option 43 transfer-mode http)
+      - "${ZTP_HTTP_BIND:-127.0.0.1}:80:1180"
+    depends_on:
+      cnaas-git:
+        condition: service_healthy
+
+  cnaas_api:
+    container_name: cnaas_api
+    profiles: [campus]
+    image: docker.sunet.se/cnaas/api:v1.9
+    build:
+      context: https://github.com/SUNET/cnaas-nms.git#v1.9.0
+      dockerfile: docker/api/Dockerfile
+    environment:
+      <<: *cnaas-repos
+      USERNAME_DHCP_BOOT: ${CNAAS_DEVICE_USERNAME:-cnaas}
+      PASSWORD_DHCP_BOOT: ${CNAAS_DEVICE_PASSWORD:-changeme}
+      USERNAME_DISCOVERED: ${CNAAS_DEVICE_USERNAME:-cnaas}
+      PASSWORD_DISCOVERED: ${CNAAS_DEVICE_PASSWORD:-changeme}
+      USERNAME_INIT: ${CNAAS_DEVICE_USERNAME:-cnaas}
+      PASSWORD_INIT: ${CNAAS_DEVICE_PASSWORD:-changeme}
+      USERNAME_MANAGED: ${CNAAS_DEVICE_USERNAME:-cnaas}
+      PASSWORD_MANAGED: ${CNAAS_DEVICE_PASSWORD:-changeme}
+      JWT_SECRET_KEY: ${CNAAS_JWT_SECRET_KEY:-change-me-campus-secret}
+      PERMISSIONS_DISABLED: "True"
+      OIDC_ENABLED: "False"
+      CNAAS_DB_PASSWORD: ${CNAAS_DB_PASSWORD:-cnaas}
+      # Exposed to the Junos templates (see cnaas/templates/junos/base.j2)
+      TEMPLATE_SECRET_ROOT_HASH: ${TEMPLATE_SECRET_ROOT_HASH:-}
+      TEMPLATE_SECRET_CNAAS_HASH: ${TEMPLATE_SECRET_CNAAS_HASH:-}
+    ports:
+      - "${BIND_ADDRESS_CNAAS_API:-127.0.0.1}:1443:1443"
+    volumes:
+      - cnaas-jwt:/opt/cnaas/jwtcert:ro
+      - cnaas-cacert:/opt/cnaas/cacert
+    depends_on:
+      cnaas_postgres:
+        condition: service_healthy
+      cnaas_redis:
+        condition: service_started
+      cnaas_httpd:
+        condition: service_started
+      cnaas-jwt:
+        condition: service_completed_successfully
+
+  cnaas_dhcpd:
+    container_name: cnaas_dhcpd
+    profiles: [campus]
+    image: docker.sunet.se/cnaas/dhcpd:v1.5
+    build:
+      context: https://github.com/SUNET/cnaas-nms.git#v1.5.0
+      dockerfile: docker/dhcpd/Dockerfile
+    # Host networking: dhcpd has to see broadcasts on the ZTP VLAN interface of this host.
+    network_mode: host
+    extra_hosts:
+      - "cnaas_api:127.0.0.1"
+      - "cnaas-git:127.0.0.1"
+    entrypoint:
+      - sh
+      - -c
+      - export JWT_AUTH_TOKEN="$$(cat /jwt/token)" && exec supervisord -c /etc/supervisor/supervisord.conf
+    environment:
+      GITREPO_ETC: git://cnaas-git/etc.git
+    volumes:
+      - cnaas-jwt:/jwt:ro
+    depends_on:
+      cnaas_api:
+        condition: service_started
+
+volumes:
+  cnaas-git:
+  cnaas-jwt:
+  cnaas-postgres-data:
+  cnaas-cacert:

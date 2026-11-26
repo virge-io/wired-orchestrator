@@ -1,0 +1,81 @@
+system {
+    host-name {{ host }};
+{% if domain_name is defined and domain_name %}
+    domain-name {{ domain_name }};
+{% endif %}
+    root-authentication {
+        encrypted-password "{{ TEMPLATE_SECRET_ROOT_HASH }}"; ## SECRET-DATA
+    }
+    login {
+{% if banner_login is defined and banner_login %}
+        message "{{ banner_login | replace('\n', '\\n') }}";
+{% endif %}
+        user cnaas {
+            class super-user;
+            authentication {
+                encrypted-password "{{ TEMPLATE_SECRET_CNAAS_HASH }}"; ## SECRET-DATA
+            }
+        }
+{% for user in users | default([]) %}
+        user {{ user.username }} {
+{% if user.uid is defined and user.uid %}
+            uid {{ user.uid }};
+{% endif %}
+            class {{ user.permission_juniper | default('super-user') }};
+            authentication {
+{% if user.password_hash_juniper is defined and user.password_hash_juniper %}
+                encrypted-password "{{ user.password_hash_juniper }}"; ## SECRET-DATA
+{% endif %}
+{% if user.ssh_key is defined and user.ssh_key %}
+                ssh-ed25519 "{{ user.ssh_key }}";
+{% endif %}
+            }
+        }
+{% endfor %}
+    }
+    services {
+        ssh {
+            root-login deny;
+            protocol-version v2;
+        }
+        netconf {
+            ssh;
+        }
+    }
+{% if dns_servers is defined and dns_servers %}
+    name-server {
+{% for dns in dns_servers %}
+        {{ dns.host }};
+{% endfor %}
+    }
+{% endif %}
+    syslog {
+        file messages {
+            any notice;
+            authorization info;
+        }
+{% for server in syslog_servers | default([]) %}
+        host {{ server.host }} {
+            any notice;
+{% if server.port is defined and server.port %}
+            port {{ server.port }};
+{% endif %}
+        }
+{% endfor %}
+    }
+{% if ntp_servers is defined and ntp_servers %}
+    ntp {
+{% for ntp in ntp_servers %}
+        server {{ ntp.host }};
+{% endfor %}
+    }
+{% endif %}
+}
+protocols {
+    lldp {
+        interface all;
+    }
+    lldp-med {
+        interface all;
+    }
+}
