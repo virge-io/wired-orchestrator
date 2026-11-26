@@ -1,5 +1,7 @@
 # Example Workflow Orchestrator
 
+> **Campus / CNaaS-NMS:** Juniper campus switches with ZTP, corelinks and an NMS view: see [docs/campus-cnaas.md](docs/campus-cnaas.md) (`COMPOSE_PROFILES=campus`).
+
 Example workflow orchestrator implementation based on the
 [orchestrator-core](https://workfloworchestrator.org/orchestrator-core/) framework.
 

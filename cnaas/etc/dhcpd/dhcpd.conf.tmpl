@@ -1,0 +1,37 @@
+# Rendered at startup by cnaas-git (envsubst). ZTP DHCP for factory-default Juniper switches.
+ddns-update-style none;
+default-lease-time 300;
+max-lease-time 600;
+deny duplicates;
+one-lease-per-client on;
+not authoritative;
+log-facility local7;
+
+on commit {
+  set swMac = binary-to-ascii(16, 8, ":", substring(hardware, 1, 6));
+  set swIp = binary-to-ascii(10, 8, ".", leased-address);
+  execute("/opt/cnaas/dhcp-hook.sh", "commit", swMac, swIp, swPlatform);
+}
+
+option space JNPR;
+option JNPR.image-file-name code 0 = text;
+option JNPR.config-file-name code 1 = text;
+option JNPR.image-file-type code 2 = text;
+option JNPR.transfer-mode code 3 = text;
+option JNPR-encapsulation code 43 = encapsulate JNPR;
+
+class "JUNIPER" {
+  match if ( substring(option vendor-class-identifier, 0, 7) = "Juniper");
+  set swPlatform = "junos";
+  option JNPR.config-file-name "/templates/junos/dhcp-init.j2";
+  option JNPR.transfer-mode "http";
+  option tftp-server-name "${ZTP_HTTP_SERVER}";
+}
+
+subnet ${ZTP_SUBNET} netmask ${ZTP_NETMASK} {
+  option routers ${ZTP_ROUTER};
+  pool {
+    range ${ZTP_RANGE_START} ${ZTP_RANGE_END};
+    allow members of "JUNIPER";
+  }
+}

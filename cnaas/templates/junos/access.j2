@@ -1,0 +1,79 @@
+{#- Distribution/access switch (CNaaS ACCESS). Uplinks (detected by LLDP during init) form ae0 towards the
+    core; access ports follow their CNaaS interface configtype. -#}
+{% include 'base.j2' %}
+chassis {
+    aggregated-devices {
+        ethernet {
+            device-count 8;
+        }
+    }
+}
+interfaces {
+{% for intf in interfaces | default([]) %}
+    {{ intf.name }} {
+{%   if intf.ifclass == 'ACCESS_UPLINK' %}
+        description "uplink";
+        ether-options {
+            802.3ad ae0;
+        }
+{%   elif intf.ifclass == 'ACCESS_DOWNLINK' %}
+        description "downlink {{ intf.data.neighbor | default('') }}";
+        ether-options {
+            802.3ad ae{{ intf.indexnum | default(loop.index) + 1 }};
+        }
+{%   elif intf.ifclass == 'ACCESS_UNTAGGED' %}
+{%     if intf.data.description is defined %}
+        description "{{ intf.data.description }}";
+{%     endif %}
+        unit 0 {
+            family ethernet-switching {
+                interface-mode access;
+                vlan {
+                    members {{ intf.data.untagged_vlan | default(mgmt_vlan_id) }};
+                }
+            }
+        }
+{%   elif intf.ifclass == 'ACCESS_TAGGED' %}
+        unit 0 {
+            family ethernet-switching {
+                interface-mode trunk;
+                vlan {
+                    members [ {{ (intf.data.tagged_vlan_list | default([])) | join(' ') }} ];
+                }
+            }
+        }
+{%   else %}
+        disable;
+{%   endif %}
+    }
+{% endfor %}
+    ae0 {
+        description "uplink to core";
+        aggregated-ether-options {
+            lacp {
+                active;
+            }
+        }
+        unit 0 {
+            family ethernet-switching {
+                interface-mode trunk;
+                vlan {
+                    members all;
+                }
+            }
+        }
+    }
+    irb {
+        unit {{ mgmt_vlan_id }} {
+            family inet {
+                address {{ mgmt_ipif }};
+            }
+        }
+    }
+}
+routing-options {
+    static {
+        route 0.0.0.0/0 next-hop {{ mgmt_gw }};
+    }
+}
+{% include 'vlans.j2' %}
